@@ -1,30 +1,48 @@
+# 1. 智能判断协议：如果填了 https:// 就走 https，否则默认走 http
+map $upstream_raw $upstream_proto {
+    ~^https://  https;
+    default     http;
+}
+
+# 2. 智能提取真实 Host 域名/IP（自动剥离开头的 http:// 或 https://）
+map $upstream_raw $upstream_host {
+    ~^https?://([^/]+)  $1;
+    default             $upstream_raw;
+}
+
 server {
     listen 80;
     server_name _;
 
-    # 必须设置 DNS 解析器，否则 Nginx 无法解析动态域名
-    # 这里使用 Google DNS (8.8.8.8)，你也可以用 Cloudflare (1.1.1.1)
-    resolver 8.8.8.8 ipv6=off;
+    # DNS 解析器
+    resolver 8.8.8.8 1.1.1.1 ipv6=off;
 
     location / {
-        # 使用变量作为目标
-        # ${TARGET_DOMAIN} 会在启动时被 Render 里的环境变量替换
-        set $upstream_target "https://${TARGET_DOMAIN}";
-        
+        # 获取环境变量
+        set $upstream_raw "${TARGET_DOMAIN}";
+
+        # 动态拼接完整的代理目标
+        set $upstream_target "${upstream_proto}://${upstream_host}";
         proxy_pass $upstream_target;
-        
-        # 将 Host 设置为目标域名，否则对方服务器可能会拒绝访问
-        proxy_set_header Host ${TARGET_DOMAIN};
-        
-        # SSL/HTTPS 握手必须配置
+
+        # 动态传递正确的 Host 与 SNI
+        proxy_set_header Host $upstream_host;
         proxy_ssl_server_name on;
-        
-        # 标准反代头
+        proxy_ssl_name $upstream_host;
+
+        # 标准透传头
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 你的 600s 超时需求
+        # AI 流式输出防卡顿（SSE 必备）
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Connection "";
+        chunked_transfer_encoding on;
+
+        # 600s 超时时间
         proxy_connect_timeout 600s;
         proxy_send_timeout 600s;
         proxy_read_timeout 600s;
